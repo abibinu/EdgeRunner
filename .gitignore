@@ -1,0 +1,17 @@
+# Virtual environment
+venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE / Editor specific files (add more if needed)
+.vscode/
+.idea/
+
+# Secrets / Credentials file (we'll create this later)
+credentials.json
+access_token.txt
+config.ini
+*.env
