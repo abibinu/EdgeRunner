@@ -1,3 +1,3 @@
 Strategy,Total Return (%),Sharpe Ratio,Sortino Ratio,Max Drawdown (%),Win Rate (%),Total Trades,Avg Trade,Profit Factor
-MLMeanReversionStrategy,0.09,3.54,10.18,0.02,100.0,2,48.01,inf
-AdaptiveTrendStrategy,-0.05,-4.69,-2.57,0.05,0.0,2,-25.81,0.0
+MLMeanReversionStrategy,0,0,0,0,0,0,0,inf
+AdaptiveTrendStrategy,0,0,0,0,0,0,0,inf

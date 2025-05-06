@@ -1,0 +1,7 @@
+,INFY_MLMeanReversionStrategy,INFY_AdaptiveTrendStrategy,TCS_MLMeanReversionStrategy,TCS_AdaptiveTrendStrategy,RELIANCE_MLMeanReversionStrategy,RELIANCE_AdaptiveTrendStrategy
+INFY_MLMeanReversionStrategy,,,,,,
+INFY_AdaptiveTrendStrategy,,,,,,
+TCS_MLMeanReversionStrategy,,,,,,
+TCS_AdaptiveTrendStrategy,,,,1.0,,0.05308718100549146
+RELIANCE_MLMeanReversionStrategy,,,,,,
+RELIANCE_AdaptiveTrendStrategy,,,,0.05308718100549146,,1.0

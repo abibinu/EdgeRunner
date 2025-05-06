@@ -1,206 +1,158 @@
-from .base_strategy import BaseStrategy
-import pandas as pd
 import numpy as np
-from typing import Dict, Any
-from sklearn.preprocessing import StandardScaler
+import pandas as pd
+from .base_strategy import BaseStrategy
 
 class AdaptiveTrendStrategy(BaseStrategy):
-    def __init__(self, params: Dict[str, Any] = None):
-        """
-        Initialize Adaptive Trend strategy with dynamic parameter adjustment
-        """
-        default_params = {
-            'lookback_period': 20,
-            'volatility_window': 20,
-            'trend_threshold': 0.01,  # Reduced for more sensitivity
-            'stop_loss_atr_mult': 1.5,  # Tighter stop loss
-            'profit_target_atr_mult': 2.5,  # More realistic profit target
-            'rsi_upper': 70,
-            'rsi_lower': 30,
-            'min_trend_strength': 0.3  # Minimum trend strength for entry
-        }
-        super().__init__(params or default_params)
-        self.scaler = StandardScaler()
+    def __init__(self, params):
+        super().__init__()
+        self.params = params
+    
+    def calculate_indicators(self, data):
+        """Calculate technical indicators for trend analysis"""
+        indicators = {}
         
-    def calculate_trend_strength(self, data: pd.DataFrame) -> pd.Series:
-        """Calculate trend strength using multiple indicators"""
-        df = data.copy()
+        # ATR calculation
+        high_low = data['high'] - data['low']
+        high_close = np.abs(data['high'] - data['close'].shift())
+        low_close = np.abs(data['low'] - data['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        indicators['atr'] = true_range.rolling(window=self.params['volatility_window']).mean()
         
-        # Price vs EMAs
-        df['short_trend'] = ((df['close'] > df['ema_9']) & 
-                           (df['ema_9'].diff() > 0)).astype(int)
+        # EMAs for multiple timeframes
+        indicators['ema_short'] = data['close'].ewm(span=self.params['lookback_period'], adjust=False).mean()
+        indicators['ema_medium'] = data['close'].ewm(span=self.params['lookback_period'] * 2, adjust=False).mean()
+        indicators['ema_long'] = data['close'].ewm(span=self.params['lookback_period'] * 3, adjust=False).mean()
         
-        df['medium_trend'] = ((df['close'] > df['ema_21']) & 
-                            (df['ema_21'].diff() > 0)).astype(int)
+        # RSI calculation
+        delta = data['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        indicators['rsi'] = 100 - (100 / (1 + rs))
         
-        df['long_trend'] = ((df['close'] > df['ema_50']) & 
-                          (df['ema_50'].diff() > 0)).astype(int)
+        # On-Balance Volume (OBV)
+        obv = pd.Series(0, index=data.index)
+        obv.iloc[0] = data['volume'].iloc[0]
+        for i in range(1, len(data)):
+            if data['close'].iloc[i] > data['close'].iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] + data['volume'].iloc[i]
+            elif data['close'].iloc[i] < data['close'].iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] - data['volume'].iloc[i]
+            else:
+                obv.iloc[i] = obv.iloc[i-1]
         
-        # Price momentum using multiple timeframes
-        df['mom_1d'] = df['close'].pct_change() > 0
-        df['mom_5d'] = df['close'].pct_change(5) > 0
-        df['price_momentum'] = (df['mom_1d'] & df['mom_5d']).astype(int)
+        indicators['obv'] = obv
+        indicators['obv_ma'] = obv.rolling(window=self.params['lookback_period']).mean()
         
-        # Enhanced volume analysis
-        df['volume_ma'] = df['volume'].rolling(window=20).mean()
-        df['volume_trend'] = ((df['volume'] > df['volume_ma']) & 
-                             (df['volume'] > df['volume'].shift())).astype(int)
+        # MACD calculation
+        exp1 = data['close'].ewm(span=12, adjust=False).mean()
+        exp2 = data['close'].ewm(span=26, adjust=False).mean()
+        indicators['macd'] = exp1 - exp2
+        indicators['signal'] = indicators['macd'].ewm(span=9, adjust=False).mean()
         
-        # RSI momentum
-        df['rsi_trend'] = ((df['rsi'] > 50) & (df['rsi'].diff() > 0)).astype(int)
+        # ADX calculation
+        plus_dm = data['high'].diff()
+        minus_dm = -data['low'].diff()
+        plus_dm = plus_dm.where(plus_dm > minus_dm, 0)
+        minus_dm = minus_dm.where(minus_dm > plus_dm, 0)
+        tr = pd.DataFrame([
+            data['high'] - data['low'],
+            (data['high'] - data['close'].shift()).abs(),
+            (data['low'] - data['close'].shift()).abs()
+        ]).max()
         
-        # MACD momentum
-        df['macd_trend'] = ((df['macd'] > df['macd_signal']) & 
-                           (df['macd'].diff() > 0)).astype(int)
+        plus_di = 100 * (plus_dm.rolling(14).mean() / tr.rolling(14).mean())
+        minus_di = 100 * (minus_dm.rolling(14).mean() / tr.rolling(14).mean())
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        indicators['adx'] = dx.rolling(window=14).mean()
         
-        # Combine trends with dynamic weights based on volatility
-        volatility = df['atr'] / df['close']
-        vol_rank = volatility.rank(pct=True)
+        return indicators
+    
+    def calculate_trend_strength(self, indicators):
+        """Calculate overall trend strength using multiple indicators"""
+        # EMA alignment score
+        ema_score = (
+            (indicators['ema_short'] > indicators['ema_medium']).astype(int) +
+            (indicators['ema_medium'] > indicators['ema_long']).astype(int)
+        ) / 2
         
-        # Adjust weights based on volatility regime
-        short_weight = 0.35 * (1 - vol_rank) + 0.25 * vol_rank
-        medium_weight = 0.35 * (1 - vol_rank) + 0.25 * vol_rank
-        long_weight = 0.1 + 0.2 * vol_rank
+        # Volume trend confirmation
+        volume_trend = (indicators['obv'] > indicators['obv_ma']).astype(int)
         
-        trend_strength = (
-            df['short_trend'] * short_weight +
-            df['medium_trend'] * medium_weight +
-            df['long_trend'] * long_weight +
-            df['price_momentum'] * 0.1 +
-            df['volume_trend'] * 0.1 +
-            df['rsi_trend'] * 0.05 +
-            df['macd_trend'] * 0.05
-        )
+        # MACD trend
+        macd_trend = (indicators['macd'] > indicators['signal']).astype(int)
+        
+        # Normalize ADX to 0-1 range
+        adx_norm = indicators['adx'] / 100.0
+        
+        # Combined trend strength
+        trend_strength = (ema_score * 0.4 + 
+                         volume_trend * 0.2 + 
+                         macd_trend * 0.2 + 
+                         adx_norm * 0.2)
         
         return trend_strength
-
-    def calculate_volatility_regime(self, data: pd.DataFrame) -> pd.Series:
-        """Determine market volatility regime"""
-        df = data.copy()
+    
+    def generate_signals(self, data):
+        """Generate trading signals based on adaptive trend analysis"""
+        signals = pd.Series(0, index=data.index)
+        indicators = self.calculate_indicators(data)
         
-        # Calculate historical volatility
-        returns = df['close'].pct_change()
-        hist_vol = returns.rolling(window=self.params['volatility_window']).std() * np.sqrt(252)
+        # Calculate trend strength
+        trend_strength = self.calculate_trend_strength(indicators)
         
-        # Calculate ATR-based volatility
-        atr_vol = df['atr'] / df['close']
+        # Previous positions for exit conditions
+        prev_position = signals.shift(1).fillna(0)
         
-        # Calculate Bollinger Band width
-        bb_width = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-        
-        # Normalize metrics
-        hist_vol_norm = (hist_vol - hist_vol.rolling(100).mean()) / hist_vol.rolling(100).std()
-        atr_vol_norm = (atr_vol - atr_vol.rolling(100).mean()) / atr_vol.rolling(100).std()
-        bb_width_norm = (bb_width - bb_width.rolling(100).mean()) / bb_width.rolling(100).std()
-        
-        # Combine volatility metrics
-        volatility_regime = (hist_vol_norm + atr_vol_norm + bb_width_norm) / 3
-        return volatility_regime
-        
-    def adjust_parameters(self, data: pd.DataFrame, volatility_regime: pd.Series):
-        """Dynamically adjust strategy parameters based on market conditions"""
-        current_volatility = volatility_regime.iloc[-1]
-        
-        # Adjust trend threshold based on volatility
-        vol_factor = 1 + current_volatility * 0.2  # ±20% adjustment
-        self.params['trend_threshold'] = max(0.008, min(0.02, 
-            self.params['trend_threshold'] * vol_factor))
-        
-        # Adjust stop loss and profit targets
-        if current_volatility > 1:  # High volatility regime
-            self.params['stop_loss_atr_mult'] = max(1.2, 1.5 * vol_factor)
-            self.params['profit_target_atr_mult'] = max(1.8, 2.5 * vol_factor)
-        else:  # Low volatility regime
-            self.params['stop_loss_atr_mult'] = min(2.0, 1.5 / vol_factor)
-            self.params['profit_target_atr_mult'] = min(3.0, 2.5 / vol_factor)
-        
-    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Generate trading signals using adaptive trend strategy"""
-        df = self.add_technical_indicators(data)
-        
-        # Calculate trend strength and volatility
-        df['trend_strength'] = self.calculate_trend_strength(df)
-        df['volatility_regime'] = self.calculate_volatility_regime(df)
-        
-        # Adjust parameters dynamically
-        self.adjust_parameters(df, df['volatility_regime'])
-        
-        # Initialize signals
-        df['signal'] = 0
-        
-        # More responsive trend conditions
-        strong_uptrend = (
-            (df['trend_strength'] > self.params['min_trend_strength']) &
-            (df['close'] > df['ema_21']) &
-            (df['macd'] > 0) &
-            (df['rsi'] > 40) & (df['rsi'] < 75)  # Wider RSI range
+        # Entry conditions
+        long_condition = (
+            (trend_strength > self.params['min_trend_strength']) &  # Strong uptrend
+            (indicators['rsi'] < self.params['rsi_upper']) &  # Not overbought
+            (data['close'].pct_change() > self.params['trend_threshold'])  # Momentum confirmation
         )
         
-        strong_downtrend = (
-            (df['trend_strength'] < -self.params['min_trend_strength']) &
-            (df['close'] < df['ema_21']) &
-            (df['macd'] < 0) &
-            (df['rsi'] < 60) & (df['rsi'] > 25)  # Wider RSI range
+        short_condition = (
+            (trend_strength < -self.params['min_trend_strength']) &  # Strong downtrend
+            (indicators['rsi'] > self.params['rsi_lower']) &  # Not oversold
+            (data['close'].pct_change() < -self.params['trend_threshold'])  # Momentum confirmation
         )
         
-        # Volume confirmation with more flexibility
-        volume_confirmation = df['volume'] > df['volume'].rolling(window=10).mean()
-        
-        # Entry signals
-        long_entry = strong_uptrend & volume_confirmation
-        short_entry = strong_downtrend & volume_confirmation
-        
-        # Set entry signals
-        df.loc[long_entry, 'signal'] = 1
-        df.loc[short_entry, 'signal'] = -1
-        
-        # Calculate dynamic stop loss and profit targets
-        df['stop_loss'] = np.nan
-        df['profit_target'] = np.nan
-        
-        # For long positions
-        long_mask = df['signal'] == 1
-        df.loc[long_mask, 'stop_loss'] = (
-            df.loc[long_mask, 'close'] - 
-            df.loc[long_mask, 'atr'] * self.params['stop_loss_atr_mult']
-        )
-        df.loc[long_mask, 'profit_target'] = (
-            df.loc[long_mask, 'close'] + 
-            df.loc[long_mask, 'atr'] * self.params['profit_target_atr_mult']
+        # Exit conditions
+        exit_long = (
+            (trend_strength < 0) |  # Trend reversal
+            (indicators['rsi'] > self.params['rsi_upper']) |  # Overbought
+            (self.calculate_drawdown(data) < -indicators['atr'] * self.params['stop_loss_atr_mult'])  # Stop loss
         )
         
-        # For short positions
-        short_mask = df['signal'] == -1
-        df.loc[short_mask, 'stop_loss'] = (
-            df.loc[short_mask, 'close'] + 
-            df.loc[short_mask, 'atr'] * self.params['stop_loss_atr_mult']
-        )
-        df.loc[short_mask, 'profit_target'] = (
-            df.loc[short_mask, 'close'] - 
-            df.loc[short_mask, 'atr'] * self.params['profit_target_atr_mult']
+        exit_short = (
+            (trend_strength > 0) |  # Trend reversal
+            (indicators['rsi'] < self.params['rsi_lower']) |  # Oversold
+            (self.calculate_drawdown(data) < -indicators['atr'] * self.params['stop_loss_atr_mult'])  # Stop loss
         )
         
-        # More forgiving exit conditions
-        long_exit = (
-            (df['close'] < df['ema_50']) |  # Use longer-term MA for exits
-            (df['close'] < df['stop_loss'].shift(1)) |
-            (df['close'] > df['profit_target'].shift(1)) |
-            (df['trend_strength'] < -0.1)  # Less strict trend reversal
-        )
+        # Apply signals with profit targets
+        signals[long_condition] = 1
+        signals[short_condition] = -1
         
-        short_exit = (
-            (df['close'] > df['ema_50']) |  # Use longer-term MA for exits
-            (df['close'] > df['stop_loss'].shift(1)) |
-            (df['close'] < df['profit_target'].shift(1)) |
-            (df['trend_strength'] > 0.1)  # Less strict trend reversal
-        )
+        # Exit conditions
+        signals[(prev_position == 1) & exit_long] = 0
+        signals[(prev_position == -1) & exit_short] = 0
         
-        # Set exit signals
-        df.loc[long_exit & (df['signal'].shift(1) == 1), 'signal'] = 0
-        df.loc[short_exit & (df['signal'].shift(1) == -1), 'signal'] = 0
+        # Take profit at target
+        long_profit_target = data['close'] > (data['close'].shift(1) + 
+                                            indicators['atr'] * self.params['profit_target_atr_mult'])
+        short_profit_target = data['close'] < (data['close'].shift(1) - 
+                                             indicators['atr'] * self.params['profit_target_atr_mult'])
         
-        # Debug info
-        print(f"Long signals generated: {(df['signal'] == 1).sum()}")
-        print(f"Short signals generated: {(df['signal'] == -1).sum()}")
+        signals[(prev_position == 1) & long_profit_target] = 0
+        signals[(prev_position == -1) & short_profit_target] = 0
         
-        return df
+        return signals
+    
+    @staticmethod
+    def calculate_drawdown(data):
+        """Calculate drawdown for dynamic stop loss"""
+        high_water_mark = data['close'].expanding().max()
+        drawdown = (data['close'] - high_water_mark) / high_water_mark
+        return drawdown
