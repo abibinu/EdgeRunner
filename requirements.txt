@@ -1,0 +1,11 @@
+# For Yahoo Finance data
+yfinance
+# EdgeRunner - Intraday Trading Bot
+# List all required packages here
+requests
+pandas
+numpy
+scikit-learn
+matplotlib
+ta
+PyYAML

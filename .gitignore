@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pkl
+*.joblib
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data and models
+models/
+data/*.csv
+
+# Configs and secrets
+config/config.yaml
+
+# Ignore logs
+*.log
+
+# Ignore environment files
+.env
+*.env
+
+# Ignore backup files
+*~
